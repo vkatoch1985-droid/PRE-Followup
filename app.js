@@ -84,7 +84,7 @@ async function api(action, payload = {}, opt = {}) {
   if (!opt.quiet) loading(1);
   try {
     // text/plain body = "simple" CORS request → no preflight, works with Apps Script web apps
-    const res = await fetch(CFG.API_URL, { method: 'POST', body: JSON.stringify({ action, token: S.token, payload }), redirect: 'follow' });
+    const res = await fetch(CFG.API_URL, { method: 'POST', body: JSON.stringify({ action, token: S.token, payload: Object.assign({ appUrl: location.origin + location.pathname }, payload) }), redirect: 'follow' });
     let j;
     try { j = await res.json(); } catch (e) { throw new Error('The server returned an unexpected response. Check the Web App deployment.'); }
     if (!j.success) {
@@ -471,17 +471,20 @@ function openNote(c, { complete = false } = {}) {
   };
 }
 function openReschedule(c) {
-  const t = today(), nextMon = addDays(t, 7);
-  const quick = [['Tomorrow', addDays(t, 1)], ['In 2 days', addDays(t, 2)], ['In 3 days', addDays(t, 3)], ['Next week', nextMon]];
+  const t = today(), nextMon = addDays(t, 7), closed = c.status === 'Closed';
+  const quick = [['Today', t], ['Tomorrow', addDays(t, 1)], ['In 2 days', addDays(t, 2)], ['In 3 days', addDays(t, 3)], ['Next week', nextMon]];
   const m = modal({ title: 'Reschedule · ' + esc(c.clientName),
     body: `<div class="quick">${quick.map(([l, d]) => `<button class="chip" data-d="${d}">${l}<br><small class="muted">${fmtDate(d)}</small></button>`).join('')}</div>
-      <div class="form-grid"><label class="field"><span>Date *</span><input type="date" name="date" min="${t}" value="${addDays(t, 1)}"></label>
+      ${closed ? '<p class="banner">This journey is closed. Rescheduling will <b>re-open</b> it and create a new follow-up.</p>' : ''}
+      <div class="form-grid"><label class="field"><span>Date * (any date)</span><input type="date" name="date" value="${addDays(t, 1)}"></label>
       <label class="field"><span>Time (optional)</span><input type="time" name="time"></label>
       <label class="field full"><span>Reason</span><input name="reason" placeholder="Client requested a callback tomorrow at 11 AM."></label></div>`,
     foot: `<button class="btn" data-close>Cancel</button><button class="btn btn-brand" id="rsSave">${icon('clock')} Reschedule</button>` });
   m.$$('[data-d]').forEach(b => b.onclick = () => { m.$('[name=date]').value = b.dataset.d; m.$$('[data-d]').forEach(x => x.classList.toggle('on', x === b)); });
   m.$('#rsSave').onclick = async () => {
     const f = formData(m.el);
+    if (!f.date) return toast('Choose a date.', 'error');
+    if (f.date < t && !(await confirmBox(`${fmtDate(f.date)} is in the past, so this follow-up will show as overdue straight away. Continue?`, { ok: 'Yes, use this date' }))) return;
     try { await run(() => api('rescheduleTask', Object.assign(f, { taskId: c.taskId, leadId: c.leadId })), `Rescheduled to ${fmtDate(f.date)}${f.time ? ' ' + f.time : ''}.`); m.close(); afterChange(); } catch (e) { /* toast */ }
   };
 }
@@ -557,7 +560,7 @@ function leadActionButtons(r, { complete = false } = {}) {
     <button class="act wa" data-act="wa" title="WhatsApp">${icon('wa', 14)} WhatsApp</button>
     ${r.email ? `<button class="act mail" data-act="email" title="Email">${icon('mail', 14)} Email</button>` : ''}
     <button class="act" data-act="note">${icon('note', 14)} Add note</button>
-    ${closed ? '' : `<button class="act" data-act="resched">${icon('clock', 14)} Reschedule</button>`}
+    <button class="act" data-act="resched">${icon('clock', 14)} Reschedule</button>
     ${complete ? `<button class="act" data-act="complete" style="color:var(--green)">${icon('check', 14)} Mark completed</button>` : ''}
     <button class="act book" data-act="book">${icon('aed', 14)} Convert to booking</button>
     <button class="act" data-act="profile">${icon('eye', 14)} Profile</button>`;
@@ -596,7 +599,7 @@ async function openProfile({ clientId, leadId, tab = 'overview' }) {
     followups: () => p.tasks.length ? `<table class="tbl"><thead><tr><th>Due</th><th>Task</th><th>Service</th><th>Agent</th><th>Status</th><th>Reschedule reason</th><th></th></tr></thead><tbody>${p.tasks.map(t => `<tr>
       <td class="nowrap">${fmtDate(t.dueDate)}${t.dueTime ? ' ' + t.dueTime : ''}</td><td>${esc(t.label)}</td><td>${esc(t.service)}</td><td>${esc(t.agentName)}</td>
       <td>${t.status === 'Pending' && t.dueDate < today() ? badge('Overdue') : badge(t.status)}${+t.rescheduleCount ? ' ' + badge('Rescheduled') : ''}</td><td class="small">${esc(t.rescheduleReason)}</td>
-      <td>${t.status === 'Pending' ? `<button class="btn btn-sm" data-t="${t.id}" data-lead="${t.leadId}">Complete</button>` : (t.completedAt ? `<span class="muted small">${fmtDT(t.completedAt)}</span>` : '')}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No follow-ups.</div>',
+      <td class="nowrap">${t.status === 'Pending' ? `<button class="btn btn-sm" data-t="${t.id}" data-lead="${t.leadId}">Complete</button> ` : (t.completedAt ? `<span class="muted small">${fmtDT(t.completedAt)}</span> ` : '')}<button class="btn btn-sm" data-rs="${t.id}" data-lead="${t.leadId}">Reschedule</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No follow-ups.</div>',
     notes: () => p.notes.length ? `<ul class="timeline">${p.notes.map(n => `<li><div class="when">${fmtDate(n.callDate)} ${esc(n.callTime)} · ${esc(n.agentName)}</div>
       <div class="what">${badge(n.outcome)} ${n.interest ? `<span class="tag">Interest: ${esc(n.interest)}</span>` : ''}</div><div class="det">${esc(n.notes)}${n.nextFollowUp ? `<br>Next follow-up: ${fmtDate(n.nextFollowUp)}` : ''}${n.rescheduleReason ? `<br>Reason: ${esc(n.rescheduleReason)}` : ''}</div></li>`).join('')}</ul>` : '<div class="empty">No call notes yet.</div>',
     bookings: () => p.bookings.length ? `<table class="tbl"><thead><tr><th>Reference</th><th>Date</th><th>Service</th><th>Agent</th><th class="num">Amount</th><th>Status</th><th>Payment</th><th></th></tr></thead><tbody>${p.bookings.map((b, i) => `<tr>
@@ -620,6 +623,9 @@ async function openProfile({ clientId, leadId, tab = 'overview' }) {
     if (l) return handleLeadAction(l.dataset.l, p.leads[+l.closest('tr').dataset.i]);
     const t = e.target.closest('[data-t]');
     if (t) return openNote({ leadId: t.dataset.lead, taskId: t.dataset.t, clientName: c.name }, { complete: true });
+    const rs = e.target.closest('[data-rs]');
+    if (rs) { const tk = p.tasks.find(x => x.id === rs.dataset.rs), ld = p.leads.find(x => x.id === rs.dataset.lead) || {};
+      return openReschedule({ leadId: rs.dataset.lead, taskId: tk.status === 'Pending' ? tk.id : '', clientName: c.name, status: ld.status }); }
     const b = e.target.closest('[data-b]');
     if (b) { const bk = p.bookings[+b.dataset.b]; return openBooking({ clientName: c.name, leadId: bk.leadId }, bk); }
     if (e.target.id === 'pfSaveNotes') { await run(() => api('updateClient', { id: c.id, notes: m.$('#pfNotes').value, marketingConsent: m.$('#pfConsent').checked ? 'Yes' : 'No' }), 'Client notes saved.'); }
@@ -761,7 +767,7 @@ VIEWS.followups = async (host, q) => {
       { key: 'service', label: 'Service' }, { key: 'label', label: 'Task' }, ...(isAdmin() ? [{ key: 'agentName', label: 'Agent' }] : []),
       { key: 'status', label: 'Status', render: r => (r.overdue ? badge('Overdue') : badge(r.status)) + (r.rescheduled ? ' ' + badge('Rescheduled') : '') },
       { key: 'lastContact', label: 'Last contact', render: r => fmtDate(r.lastContact) }, { key: 'nextFollowUp', label: 'Next contact', render: r => fmtDate(r.nextFollowUp) },
-      { key: 'a', label: '', render: r => r.status === 'Pending' ? `<span class="menu-actions"><button class="act" data-act="complete">${icon('check', 13)}</button><button class="act" data-act="resched">${icon('clock', 13)}</button><button class="act call" data-act="call">${icon('phone', 13)}</button><button class="act" data-act="profile">${icon('eye', 13)}</button></span>` : `<button class="act" data-act="profile">${icon('eye', 13)}</button>` }],
+      { key: 'a', label: '', render: r => r.status === 'Pending' ? `<span class="menu-actions"><button class="act" data-act="complete" title="Complete">${icon('check', 13)}</button><button class="act" data-act="resched" title="Reschedule">${icon('clock', 13)}</button><button class="act call" data-act="call" title="Call">${icon('phone', 13)}</button><button class="act" data-act="profile" title="Profile">${icon('eye', 13)}</button></span>` : `<span class="menu-actions"><button class="act" data-act="resched" title="Schedule a new follow-up">${icon('clock', 13)} Reschedule</button><button class="act" data-act="profile">${icon('eye', 13)}</button></span>` }],
     onAction: (act, r) => handleLeadAction(act, Object.assign({}, r, { taskId: r.id })) });
   host.addEventListener('click', (e) => { const t = e.target.closest('[data-s]'); if (t) { $$('.tab', host).forEach(x => x.classList.toggle('on', x === t)); dt.set({ scope: t.dataset.s }); } });
   $('#fq').oninput = debounce(() => dt.set({ q: $('#fq').value }));
@@ -797,6 +803,7 @@ VIEWS.leads = async (host, q) => {
     { key: 'actions', label: 'Actions', render: r => `<span class="menu-actions">
       <button class="act btn-icon" data-act="profile" title="View profile">${icon('eye', 14)}</button>
       ${isAdmin() ? `<button class="act btn-icon" data-act="edit" title="Edit lead">${icon('edit', 14)}</button><button class="act btn-icon" data-act="reassign" title="Reassign lead">${icon('swap', 14)}</button>` : ''}
+      <button class="act btn-icon" data-act="resched" title="Reschedule follow-up">${icon('clock', 14)}</button>
       <button class="act btn-icon" data-act="journey" title="View journey">${icon('route', 14)}</button><button class="act btn-icon" data-act="notes" title="View notes">${icon('note', 14)}</button>
       <button class="act btn-icon" data-act="booking" title="View booking">${icon('aed', 14)}</button>
       ${r.status !== 'Closed' ? `<button class="act btn-icon" data-act="close" title="Close journey" style="color:var(--rose)">${icon('x', 14)}</button>` : ''}</span>` }];
@@ -879,8 +886,8 @@ VIEWS.journeys = async (host) => {
       { key: 'endDate', label: 'Current period ends', sort: true, render: r => fmtDate(r.endDate) }, { key: 'period', label: 'Period', num: true, sort: true },
       { key: 'status', label: 'Status', render: r => badge(r.status) + (r.closeReason ? `<div class="cell-sub">${esc(r.closeReason)}</div>` : '') },
       { key: 'pendingTasks', label: 'Open tasks', num: true }, { key: 'nextFollowUp', label: 'Next follow-up', render: r => fmtDate(r.nextFollowUp) },
-      { key: 'a', label: '', render: r => `<span class="menu-actions"><button class="act" data-act="journey">${icon('eye', 13)} History</button>${r.status === 'Active' ? `<button class="act" data-act="close" style="color:var(--rose)">Close</button>` : ''}</span>` }],
-    onAction: (act, r) => handleLeadAction(act, { leadId: r.leadId, clientId: r.clientId, clientName: r.clientName, phone: r.phone, service: r.service }) });
+      { key: 'a', label: '', render: r => `<span class="menu-actions"><button class="act" data-act="resched">${icon('clock', 13)} Reschedule</button><button class="act" data-act="journey">${icon('eye', 13)} History</button>${r.status === 'Active' ? `<button class="act" data-act="close" style="color:var(--rose)">Close</button>` : ''}</span>` }],
+    onAction: (act, r) => handleLeadAction(act, { leadId: r.leadId, clientId: r.clientId, clientName: r.clientName, phone: r.phone, service: r.service, status: r.status === 'Closed' ? 'Closed' : '' }) });
   const sync = () => dt.set({ q: $('#jq').value, status: $('#js').value, agentId: $('#ja')?.value || '', endingSoon: $('#je').checked });
   $('#jq').oninput = debounce(sync); ['#js', '#ja', '#je'].forEach(s => { if ($(s)) $(s).onchange = sync; });
   S.reload = dt.reload; await dt.reload();
@@ -899,7 +906,7 @@ VIEWS.agents = async (host) => {
         <td>${a.serviceNames.map(s => `<span class="tag">${esc(s)}</span>`).join('') || '<span class="muted small">None</span>'}</td>${isSuper() ? `<td>${esc(a.adminName || '—')}</td>` : ''}<td>${badge(a.status)}</td>
         <td class="num"><a href="#/leads?agentId=${a.id}">${nf(a.stats.assigned)}</a></td><td class="num">${nf(a.stats.completed)}</td><td class="num">${nf(a.stats.pending)}</td>
         <td class="num" style="${a.stats.overdue ? 'color:var(--red);font-weight:700' : ''}">${nf(a.stats.overdue)}</td><td class="num">${nf(a.stats.converted)}</td><td class="num"><b>${aed(a.stats.revenue)}</b></td>
-        <td class="nowrap"><button class="btn btn-sm" data-a="edit">Edit</button> <button class="btn btn-sm" data-a="toggle">${a.status === 'Active' ? 'Deactivate' : 'Activate'}</button> <button class="btn btn-sm" data-a="reset">Reset password</button> <button class="btn btn-sm" data-a="leads">Leads</button></td></tr>`).join('')
+        <td class="nowrap"><button class="btn btn-sm" data-a="edit">Edit</button> <button class="btn btn-sm" data-a="toggle">${a.status === 'Active' ? 'Deactivate' : 'Activate'}</button> <button class="btn btn-sm" data-a="temp">Set temp password</button> <button class="btn btn-sm" data-a="reset">Email reset link</button> <button class="btn btn-sm" data-a="leads">Leads</button></td></tr>`).join('')
       || '<tr><td colspan="11"><div class="empty"><b>No agents yet</b>Create your first agent and choose the services they handle.</div></td></tr>'}</tbody></table></div>`;
   };
   const load = async () => { rows = await agentList(true); draw(); };
@@ -909,6 +916,7 @@ VIEWS.agents = async (host) => {
     const b = e.target.closest('[data-a]'); if (!b) return; const a = rows[+b.closest('tr').dataset.i];
     if (b.dataset.a === 'edit') userModal(a, admins, load);
     if (b.dataset.a === 'leads') go('#/leads?agentId=' + a.id);
+    if (b.dataset.a === 'temp') tempPasswordModal(a, load);
     if (b.dataset.a === 'toggle' && await confirmBox(`${a.status === 'Active' ? 'Deactivate' : 'Activate'} ${esc(a.name)}?${a.status === 'Active' ? ' They will not receive new leads and cannot sign in. Existing leads stay with them until you reassign them.' : ''}`)) {
       await run(() => api('setUserStatus', { id: a.id, status: a.status === 'Active' ? 'Disabled' : 'Active' }), 'Status updated.'); load(); }
     if (b.dataset.a === 'reset' && await confirmBox(`Send ${esc(a.name)} a secure link to set a new password? Their current password stops working immediately.`)) {
@@ -916,6 +924,25 @@ VIEWS.agents = async (host) => {
   };
   S.reload = load; await load();
 };
+function genPassword() {
+  const a = 'abcdefghjkmnpqrstuvwxyz', d = '23456789', all = a + a.toUpperCase() + d, rnd = (n) => crypto.getRandomValues(new Uint32Array(1))[0] % n;
+  let p = a[rnd(a.length)] + d[rnd(d.length)]; for (let i = 0; i < 8; i++) p += all[rnd(all.length)];
+  return 'Sidra-' + p;
+}
+function tempPasswordModal(u, onDone) {
+  const m = modal({ title: 'Set temporary password · ' + esc(u.name),
+    body: `<p class="muted small">Give this password to <b>${esc(u.name)}</b> in person or by phone. They sign in with <b>${esc(u.email)}</b> and must choose their own password straight away. Any setup link sent earlier stops working.</p>
+      <label class="field"><span>Temporary password (min 8 characters, letters + numbers)</span><div class="gap"><input name="password" id="tpPw" value="${genPassword()}" style="flex:1;font-family:monospace"><button class="btn btn-sm" id="tpGen" type="button">Generate</button><button class="btn btn-sm" id="tpCopy" type="button">Copy</button></div></label>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn btn-brand" id="tpSave">Set password</button>` });
+  m.$('#tpGen').onclick = () => { m.$('#tpPw').value = genPassword(); };
+  m.$('#tpCopy').onclick = () => { navigator.clipboard?.writeText(m.$('#tpPw').value); toast('Copied.', 'ok'); };
+  m.$('#tpSave').onclick = async () => {
+    const pw = m.$('#tpPw').value.trim();
+    try { await run(() => api('setTempPassword', { id: u.id, password: pw })); m.close();
+      modal({ title: 'Temporary password set ✓', body: `<p>Share these sign-in details with ${esc(u.name)}:</p><div class="preview-box"><b>Website:</b> ${esc(location.origin + location.pathname)}<br><b>Sign in as:</b> ${u.role === 'agent' ? 'Team member' : 'Admin'}<br><b>Email:</b> ${esc(u.email)}<br><b>Temporary password:</b> <code>${esc(pw)}</code></div><p class="muted small">They will be asked to set their own password after signing in.</p>` });
+      if (onDone) onDone(); } catch (e) { /* toast */ }
+  };
+}
 function showLinkResult(r, okMsg) {
   if (r.emailSent) return toast(okMsg, 'ok');
   modal({ title: 'Email could not be sent', body: `<p>The email could not be delivered. Share this one-time setup link with the user securely (valid 72 hours):</p><input readonly value="${esc(r.setupLink)}" onclick="this.select()">` });
@@ -930,12 +957,17 @@ function userModal(u, admins, onDone) {
       ${role === 'agent' && isSuper() ? `<label class="field"><span>Reporting admin (team)</span><select name="adminId"><option value="">— None —</option>${admins.map(a => `<option value="${a.id}" ${a.id === u.adminId ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>` : ''}</div>
       ${role === 'agent' ? `<div class="field"><span style="display:block;font-size:12px;font-weight:600;margin-bottom:6px">Services this agent handles (leads are distributed equally among agents per service)</span>
       <div class="check-grid">${S.boot.services.map(s => `<label class="check"><input type="checkbox" name="services" data-multi value="${s.id}" ${(u.services || []).includes(s.id) ? 'checked' : ''}> ${esc(s.name)}${s.status !== 'Active' ? ' <span class="muted small">(inactive)</span>' : ''}</label>`).join('')}</div></div>` : ''}
-      ${isNew ? '<p class="muted small">A welcome email with a secure password-setup link will be sent automatically. Passwords are never emailed.</p>' : ''}`,
+      ${isNew ? `<div class="card card-pad mt" style="background:var(--tint)"><label class="check" style="background:#fff"><input type="checkbox" id="uTempOn" checked> Set a temporary password now (recommended — the user can sign in straight away)</label>
+        <label class="field mt" id="uTempBox"><span>Temporary password (give it to the user yourself — it is never emailed)</span><div class="gap"><input name="tempPassword" id="uTemp" value="${genPassword()}" style="flex:1;font-family:monospace"><button class="btn btn-sm" type="button" id="uTempGen">Generate</button></div></label>
+        <p class="muted small">A welcome email with a password-setup link is also sent. The user must change the temporary password at first sign-in.</p></div>` : ''}`,
     foot: `<button class="btn" data-close>Cancel</button><button class="btn btn-brand" id="uSave">${isNew ? 'Create account & send welcome email' : 'Save changes'}</button>` });
+  if (isNew) { m.$('#uTempOn').onchange = (e) => { m.$('#uTempBox').classList.toggle('hidden', !e.target.checked); }; m.$('#uTempGen').onclick = () => { m.$('#uTemp').value = genPassword(); }; }
   m.$('#uSave').onclick = async () => {
     const f = formData(m.el); f.role = role; f.id = u.id; if (role === 'agent' && !f.services) f.services = [];
+    if (isNew && !m.$('#uTempOn').checked) delete f.tempPassword;
     try { const r = await run(() => api('saveUser', f)); m.close(); S.agents = null;
-      if (isNew) showLinkResult(r, 'Account created and welcome email sent.'); else toast('Account updated.', 'ok'); onDone(); } catch (e) { /* toast */ }
+      if (isNew && r.tempPasswordSet) modal({ title: 'Account created ✓', body: `<p>Share these sign-in details with ${esc(f.name)}:</p><div class="preview-box"><b>Website:</b> ${esc(location.origin + location.pathname)}<br><b>Sign in as:</b> ${role === 'agent' ? 'Team member' : 'Admin'}<br><b>Email:</b> ${esc(f.email)}<br><b>Temporary password:</b> <code>${esc(f.tempPassword)}</code></div><p class="muted small">${r.emailSent ? 'A welcome email was also sent.' : 'The welcome email could not be sent — share the details above directly.'} They must choose their own password after signing in.</p>` });
+      else if (isNew) showLinkResult(r, 'Account created and welcome email sent.'); else toast('Account updated.', 'ok'); onDone(); } catch (e) { /* toast */ }
   };
 }
 
@@ -1376,7 +1408,7 @@ VIEWS.users = async (host) => {
       $('#utbl').innerHTML = `<table class="tbl"><thead><tr><th>Name</th><th>Role</th><th>Team admin</th><th>Status</th><th>Last sign in</th><th>Created</th><th></th></tr></thead><tbody>${rows.map(u => `<tr data-id="${u.id}">
         <td><div class="cell-main">${esc(u.name)}${u.id === S.user.id ? ' <span class="tag">You</span>' : ''}</div><div class="cell-sub">${esc(u.email)}${u.pendingSetup ? ' · awaiting password setup' : ''}</div></td><td>${roleLabel(u.role)}</td><td>${esc(u.adminName || '—')}</td>
         <td>${badge(u.status)}</td><td>${fmtDT(u.lastLogin)}</td><td>${fmtDate(u.createdAt)}</td>
-        <td class="nowrap">${u.id === S.user.id ? `<button class="btn btn-sm" data-u="edit">Edit</button>` : `<button class="btn btn-sm" data-u="edit">Edit</button> <button class="btn btn-sm" data-u="toggle">${u.status === 'Active' ? 'Disable' : 'Enable'}</button> <button class="btn btn-sm" data-u="reset">Reset password</button> <button class="btn btn-sm btn-danger" data-u="del">Delete</button>`}</td></tr>`).join('')}</tbody></table>`;
+        <td class="nowrap">${u.id === S.user.id ? `<button class="btn btn-sm" data-u="edit">Edit</button>` : `<button class="btn btn-sm" data-u="edit">Edit</button> <button class="btn btn-sm" data-u="toggle">${u.status === 'Active' ? 'Disable' : 'Enable'}</button> <button class="btn btn-sm" data-u="temp">Set temp password</button> <button class="btn btn-sm" data-u="reset">Email reset link</button> <button class="btn btn-sm btn-danger" data-u="del">Delete</button>`}</td></tr>`).join('')}</tbody></table>`;
     };
     $('#uq').oninput = draw; $('#ur').onchange = draw; draw();
     $('#nAgent').onclick = () => userModal({ role: 'agent' }, admins, users);
@@ -1384,6 +1416,7 @@ VIEWS.users = async (host) => {
     $('#utbl').onclick = async (e) => {
       const b = e.target.closest('[data-u]'); if (!b) return; const u = list.find(x => x.id === b.closest('tr').dataset.id);
       if (b.dataset.u === 'edit') userModal(u, admins, users);
+      if (b.dataset.u === 'temp') tempPasswordModal(u, users);
       if (b.dataset.u === 'toggle' && await confirmBox(`${u.status === 'Active' ? 'Disable' : 'Enable'} ${esc(u.name)}?`)) { await run(() => api('setUserStatus', { id: u.id, status: u.status === 'Active' ? 'Disabled' : 'Active' }), 'Updated.'); users(); }
       if (b.dataset.u === 'reset' && await confirmBox(`Send ${esc(u.name)} a password reset link?`)) showLinkResult(await run(() => api('resetPassword', { id: u.id })), 'Reset email sent.');
       if (b.dataset.u === 'del' && await confirmBox(`Permanently delete ${esc(u.name)}? Agents with leads must have their leads reassigned first — or disable the account instead.`, { danger: true, ok: 'Delete' })) { await run(() => api('deleteUser', { id: u.id }), 'Account deleted.'); users(); }
